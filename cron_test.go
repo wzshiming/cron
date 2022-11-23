@@ -65,7 +65,7 @@ func TestCron(t *testing.T) {
 				cron.Add(Order(times...), do)
 				time.Sleep(time.Millisecond)
 			}
-			cron.Wait()
+			cron.waitPendingToBeEmpty()
 			if !reflect.DeepEqual(tt.want, got) {
 				t.Fatalf("the execution time is not as expected: want %v, got %v", tt.want, got)
 			}
@@ -91,5 +91,5 @@ func TestCronCancel(t *testing.T) {
 	for _, cancel := range cancels {
 		cancel()
 	}
-	cron.Wait()
+	cron.waitPendingToBeEmpty()
 }

@@ -210,14 +210,14 @@ func (t *Cron) deleteJobs(timestamp int64) bool {
 	return ok
 }
 
-func (t *Cron) len() int {
+func (t *Cron) pending() int {
 	t.mut.Lock()
 	defer t.mut.Unlock()
 	return t.linked.Len()
 }
 
-func (t *Cron) Wait() {
-	for t.len() != 0 {
+func (t *Cron) waitPendingToBeEmpty() {
+	for t.pending() != 0 {
 		time.Sleep(time.Second)
 	}
 }
