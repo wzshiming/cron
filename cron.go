@@ -21,31 +21,45 @@ type linkedJobs struct {
 	Jobs []*linkedJob
 }
 
+// Cron is a cron job manager.
 type Cron struct {
 	mut           sync.Mutex
 	linked        *llrb.Tree[int64, *linkedJobs]
-	doStart       sync.Once
 	nextTimestamp int64
-	now           func() time.Time
 	newly         chan struct{}
 	indexJob      map[*linkedJob]int64
+	state         int // 0: stop, 1: running
 }
 
+var (
+	intervalDuration = time.Minute
+)
+
+func nowUTC() time.Time {
+	return time.Now().UTC()
+}
+
+// NewCron returns a new Cron.
 func NewCron() *Cron {
-	return &Cron{
-		linked: llrb.NewTree[int64, *linkedJobs](),
-		now: func() time.Time {
-			return time.Now().UTC()
-		},
-		newly:    make(chan struct{}),
-		indexJob: map[*linkedJob]int64{},
-	}
+	return &Cron{}
 }
 
+func (t *Cron) init() {
+	if t.state != 0 {
+		return
+	}
+	t.state = 1
+	t.indexJob = map[*linkedJob]int64{}
+	t.newly = make(chan struct{})
+	t.linked = llrb.NewTree[int64, *linkedJobs]()
+	go t.run()
+}
+
+// AddWithCancel adds a job to the cron and returns a function to cancel the job.
 func (t *Cron) AddWithCancel(nextFunc NextFunc, doFunc DoFunc) (cancelFunc DoFunc, ok bool) {
 	j, ok := t.add(nextFunc, doFunc)
 	if !ok {
-		return nil, ok
+		return nil, false
 	}
 	once := sync.Once{}
 	return func() {
@@ -81,6 +95,7 @@ func (t *Cron) cancel(j *linkedJob) {
 	return
 }
 
+// Add adds a job to the cron.
 func (t *Cron) Add(nextFunc NextFunc, doFunc DoFunc) bool {
 	_, ok := t.add(nextFunc, doFunc)
 	return ok
@@ -95,7 +110,7 @@ func (t *Cron) add(nextFunc NextFunc, doFunc DoFunc) (*linkedJob, bool) {
 		Do:   doFunc,
 	}
 
-	now := t.now()
+	now := nowUTC()
 	if !t.addLinkedJob(j, now) {
 		return nil, false
 	}
@@ -103,12 +118,9 @@ func (t *Cron) add(nextFunc NextFunc, doFunc DoFunc) (*linkedJob, bool) {
 }
 
 func (t *Cron) addLinkedJob(j *linkedJob, now time.Time) bool {
-	t.doStart.Do(func() {
-		go t.run()
-	})
-
 	t.mut.Lock()
 	defer t.mut.Unlock()
+	t.init()
 
 	next, ok := j.Next(now)
 	if !ok {
@@ -152,41 +164,48 @@ func (t *Cron) wait(duration time.Duration) {
 
 func (t *Cron) run() {
 	for {
+		// Get the next job.
 		next, jobs, ok := t.getNextJobs()
 		if !ok {
-			t.wait(time.Second)
+			// Wait for a new job to be added.
+			t.wait(intervalDuration)
+
+			// TODO: Exit the goroutine and reset cron if there is no job for a long time
 			continue
 		}
 		if len(jobs.Jobs) == 0 {
+			// Delete the empty job. This should not happen.
 			t.deleteJobs(next)
 			continue
 		}
-		now := t.now()
+		now := nowUTC()
 		sub := time.Unix(0, next).Sub(now)
 		if sub > 0 {
-			// Avoid inaccurate execution time caused by long sleep
-			if sub > time.Minute {
-				sub = time.Minute
+			// Avoid inaccurate execution time caused by long sleep.
+			if sub > intervalDuration {
+				sub = intervalDuration
 			}
+			// Wait for the next job to be executed.
 			t.wait(sub)
 			continue
 		}
 
+		// Will be executed immediately, delete the job first.
 		ok = t.deleteJobs(next)
 		if !ok {
-			// It won't get here.
+			// This should not happen.
 			continue
 		}
 
-		// Do present job
+		// Execute the jobs of the time.
 		for _, j := range jobs.Jobs {
 			j.Do()
 		}
 
-		now = t.now()
-		// Schedule next job
+		now = nowUTC()
+		// Schedule next execution time.
 		for _, j := range jobs.Jobs {
-			t.addLinkedJob(j, now)
+			_ = t.addLinkedJob(j, now)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Order is an order timer.
 func Order(ts ...time.Time) NextFunc {
 	index := 0
 	sort.Slice(ts, func(i, j int) bool {
